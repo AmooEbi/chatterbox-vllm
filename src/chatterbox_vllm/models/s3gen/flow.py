@@ -89,7 +89,10 @@ class MaskedDiffWithXvec(torch.nn.Module):
         embedding = batch['embedding'].to(device)
 
         # xvec projection
-        embedding = F.normalize(embedding, dim=1)
+        if self.fp16:
+            embedding = F.normalize(embedding.half(), dim=1)
+        else:
+            embedding = F.normalize(embedding, dim=1)
         embedding = self.spk_embed_affine_layer(embedding)
 
         # concat text and prompt_text
@@ -138,10 +141,13 @@ class MaskedDiffWithXvec(torch.nn.Module):
             # Convert layer weights to FP16 if needed
             if self.spk_embed_affine_layer.weight.dtype != torch.float16:
                 self.spk_embed_affine_layer = self.spk_embed_affine_layer.half()
+            target_dtype = torch.float16
+        else:
+            target_dtype = torch.float32
 
         assert token.shape[0] == 1
-        # xvec projection
-        embedding = F.normalize(embedding, dim=1)
+        # xvec projection - ensure dtype consistency
+        embedding = F.normalize(embedding.to(target_dtype), dim=1)
         embedding = self.spk_embed_affine_layer(embedding)
 
         # concat text and prompt_text
@@ -273,12 +279,9 @@ class CausalMaskedDiffWithXvec(torch.nn.Module):
         else:
             target_dtype = torch.float32
         
-        # Ensure embedding matches layer dtype before projection
-        embedding = embedding.to(target_dtype)
-        
         assert token.shape[0] == 1
-        # xvec projection
-        embedding = F.normalize(embedding, dim=1)
+        # xvec projection - normalize and ensure dtype consistency BEFORE projection
+        embedding = F.normalize(embedding.to(target_dtype), dim=1)
         embedding = self.spk_embed_affine_layer(embedding)
 
         # concat text and prompt_text
