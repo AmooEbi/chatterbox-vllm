@@ -130,7 +130,8 @@ class MaskedDiffWithXvec(torch.nn.Module):
                   prompt_feat,
                   prompt_feat_len,
                   embedding,
-                  flow_cache):
+                  flow_cache,
+                  n_timesteps: int = 5):  # Default reduced from 10 to 5 for faster inference
         if self.fp16 is True:
             prompt_feat = prompt_feat.half()
             embedding = embedding.half()
@@ -169,7 +170,7 @@ class MaskedDiffWithXvec(torch.nn.Module):
             mask=mask.unsqueeze(1),
             spks=embedding,
             cond=conds,
-            n_timesteps=10,
+            n_timesteps=n_timesteps,  # Use the passed parameter instead of hardcoded 10
             prompt_len=mel_len1,
             flow_cache=flow_cache
         )
@@ -248,7 +249,7 @@ class CausalMaskedDiffWithXvec(torch.nn.Module):
                   prompt_feat_len,
                   embedding,
                   finalize,
-                  n_timesteps: int):
+                  n_timesteps: int = 5):  # Default reduced from 10 to 5 for faster inference
         if self.fp16 is True:
             prompt_feat = prompt_feat.half()
             embedding = embedding.half()

@@ -283,7 +283,7 @@ class S3Token2Wav(S3Token2Mel):
         # pre-computed ref embedding (prod API)
         ref_dict: Optional[dict] = None,
         finalize: bool = False,
-        n_timesteps: int = 10,
+        n_timesteps: int = 5,  # Default reduced from 10 to 5 for faster inference
     ):
         return super().forward(speech_tokens, ref_wav=ref_wav, ref_sr=ref_sr, ref_dict=ref_dict, finalize=finalize, n_timesteps=n_timesteps)
 
@@ -305,7 +305,7 @@ class S3Token2Wav(S3Token2Mel):
         cache_source: torch.Tensor = None, # NOTE: this arg is for streaming, it can probably be removed here
         finalize: bool = True,
         no_trim: bool = False,
-        n_timesteps: int = 10,
+        n_timesteps: int = 5,  # Default reduced from 10 to 5 for faster inference
     ):
         output_mels = self.flow_inference(speech_tokens, ref_wav=ref_wav, ref_sr=ref_sr, ref_dict=ref_dict, finalize=finalize, n_timesteps=n_timesteps)
         output_wavs, output_sources = self.hift_inference(output_mels, cache_source)
