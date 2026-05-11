@@ -135,6 +135,9 @@ class MaskedDiffWithXvec(torch.nn.Module):
         if self.fp16 is True:
             prompt_feat = prompt_feat.half()
             embedding = embedding.half()
+            # Convert layer weights to FP16 if needed
+            if self.spk_embed_affine_layer.weight.dtype != torch.float16:
+                self.spk_embed_affine_layer = self.spk_embed_affine_layer.half()
 
         assert token.shape[0] == 1
         # xvec projection
@@ -160,7 +163,7 @@ class MaskedDiffWithXvec(torch.nn.Module):
         h, h_lengths = self.length_regulator.inference(h[:, :token_len1], h[:, token_len1:], mel_len1, mel_len2, self.input_frame_rate)
 
         # get conditions
-        conds = torch.zeros([1, mel_len1 + mel_len2, self.output_size], device=token.device).to(h.dtype)
+        conds = torch.zeros([1, mel_len1 + mel_len2, self.output_size], device=token.device).to(prompt_feat.dtype)
         conds[:, :mel_len1] = prompt_feat
         conds = conds.transpose(1, 2)
 
@@ -253,6 +256,9 @@ class CausalMaskedDiffWithXvec(torch.nn.Module):
         if self.fp16 is True:
             prompt_feat = prompt_feat.half()
             embedding = embedding.half()
+            # Convert layer weights to FP16 if needed
+            if self.spk_embed_affine_layer.weight.dtype != torch.float16:
+                self.spk_embed_affine_layer = self.spk_embed_affine_layer.half()
 
         assert token.shape[0] == 1
         # xvec projection
@@ -272,7 +278,7 @@ class CausalMaskedDiffWithXvec(torch.nn.Module):
         h = self.encoder_proj(h)
 
         # get conditions
-        conds = torch.zeros([1, mel_len1 + mel_len2, self.output_size], device=token.device).to(h.dtype)
+        conds = torch.zeros([1, mel_len1 + mel_len2, self.output_size], device=token.device).to(prompt_feat.dtype)
         conds[:, :mel_len1] = prompt_feat
         conds = conds.transpose(1, 2)
 
