@@ -373,7 +373,10 @@ class ChatterboxTTS:
                         ref_dict=s3gen_ref,
                         n_timesteps=diffusion_steps,
                     )
-                    results.append(wav.cpu())
+                    # Ensure result is a tensor (handle both tensor and list outputs)
+                    if isinstance(wav, list):
+                        wav = torch.tensor(wav)
+                    results.append(wav.cpu().squeeze())  # Squeeze to remove batch dimension
             s3gen_gen_time = time.time() - start_time
             print(f"[S3Gen] Wavform Generation time: {s3gen_gen_time:.2f}s")
 
