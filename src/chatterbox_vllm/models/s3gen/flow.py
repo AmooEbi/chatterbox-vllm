@@ -163,11 +163,11 @@ class MaskedDiffWithXvec(torch.nn.Module):
         h, h_lengths = self.length_regulator.inference(h[:, :token_len1], h[:, token_len1:], mel_len1, mel_len2, self.input_frame_rate)
 
         # get conditions
-        conds = torch.zeros([1, mel_len1 + mel_len2, self.output_size], device=token.device).to(prompt_feat.dtype)
+        conds = torch.zeros([1, mel_len1 + mel_len2, self.output_size], device=token.device, dtype=target_dtype)
         conds[:, :mel_len1] = prompt_feat
         conds = conds.transpose(1, 2)
 
-        mask = (~make_pad_mask(torch.tensor([mel_len1 + mel_len2]))).to(h)
+        mask = (~make_pad_mask(torch.tensor([mel_len1 + mel_len2], device=token.device))).to(h)
         feat, flow_cache = self.decoder(
             mu=h.transpose(1, 2).contiguous(),
             mask=mask.unsqueeze(1),
@@ -253,13 +253,29 @@ class CausalMaskedDiffWithXvec(torch.nn.Module):
                   embedding,
                   finalize,
                   n_timesteps: int = 5):  # Default reduced from 10 to 5 for faster inference
+        # Ensure all inputs are on the correct device
+        token = token.to(self.device)
+        token_len = token_len.to(self.device)
+        prompt_token = prompt_token.to(self.device)
+        prompt_token_len = prompt_token_len.to(self.device)
+        prompt_feat = prompt_feat.to(self.device)
+        prompt_feat_len = prompt_feat_len.to(self.device) if prompt_feat_len is not None else None
+        embedding = embedding.to(self.device)
+        
         if self.fp16 is True:
+            # Convert everything to FP16 consistently
             prompt_feat = prompt_feat.half()
             embedding = embedding.half()
-            # Convert layer weights to FP16 if needed
+            # Ensure the layer is in FP16
             if self.spk_embed_affine_layer.weight.dtype != torch.float16:
                 self.spk_embed_affine_layer = self.spk_embed_affine_layer.half()
-
+            target_dtype = torch.float16
+        else:
+            target_dtype = torch.float32
+        
+        # Ensure embedding matches layer dtype before projection
+        embedding = embedding.to(target_dtype)
+        
         assert token.shape[0] == 1
         # xvec projection
         embedding = F.normalize(embedding, dim=1)
@@ -278,11 +294,11 @@ class CausalMaskedDiffWithXvec(torch.nn.Module):
         h = self.encoder_proj(h)
 
         # get conditions
-        conds = torch.zeros([1, mel_len1 + mel_len2, self.output_size], device=token.device).to(prompt_feat.dtype)
+        conds = torch.zeros([1, mel_len1 + mel_len2, self.output_size], device=token.device, dtype=target_dtype)
         conds[:, :mel_len1] = prompt_feat
         conds = conds.transpose(1, 2)
 
-        mask = (~make_pad_mask(torch.tensor([mel_len1 + mel_len2]))).to(h)
+        mask = (~make_pad_mask(torch.tensor([mel_len1 + mel_len2], device=token.device))).to(h)
         feat, _ = self.decoder(
             mu=h.transpose(1, 2).contiguous(),
             mask=mask.unsqueeze(1),
