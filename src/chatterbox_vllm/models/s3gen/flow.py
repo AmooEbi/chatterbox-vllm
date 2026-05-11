@@ -282,6 +282,13 @@ class CausalMaskedDiffWithXvec(torch.nn.Module):
         assert token.shape[0] == 1
         # xvec projection - normalize and ensure dtype consistency BEFORE projection
         embedding = F.normalize(embedding, dim=1)
+        
+        # CRITICAL: Ensure embedding dtype matches the layer dtype exactly
+        layer_dtype = self.spk_embed_affine_layer.weight.dtype
+        if embedding.dtype != layer_dtype:
+            logging.info(f"Converting embedding from {embedding.dtype} to {layer_dtype} to match spk_embed_affine_layer")
+            embedding = embedding.to(layer_dtype)
+        
         embedding = self.spk_embed_affine_layer(embedding)
 
         # concat text and prompt_text
