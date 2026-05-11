@@ -20,7 +20,6 @@ from torch.nn import functional as F
 from .utils.mask import make_pad_mask
 from .configs import CFM_PARAMS
 
-
 class MaskedDiffWithXvec(torch.nn.Module):
     def __init__(
         self,
@@ -187,7 +186,6 @@ class MaskedDiffWithXvec(torch.nn.Module):
         assert feat.shape[2] == mel_len2
         return feat.float(), flow_cache
 
-
 class CausalMaskedDiffWithXvec(torch.nn.Module):
     def __init__(
         self,
@@ -268,20 +266,22 @@ class CausalMaskedDiffWithXvec(torch.nn.Module):
         prompt_feat_len = prompt_feat_len.to(self.device) if prompt_feat_len is not None else None
         embedding = embedding.to(self.device)
         
+        # Determine target dtype and convert all tensors consistently
         if self.fp16 is True:
-            # Convert everything to FP16 consistently
-            prompt_feat = prompt_feat.half()
-            embedding = embedding.half()
-            # Ensure the layer is in FP16
-            if self.spk_embed_affine_layer.weight.dtype != torch.float16:
-                self.spk_embed_affine_layer = self.spk_embed_affine_layer.half()
             target_dtype = torch.float16
+            prompt_feat = prompt_feat.to(torch.float16)
+            embedding = embedding.to(torch.float16)
+            # Ensure the affine layer is in FP16
+            if self.spk_embed_affine_layer.weight.dtype != torch.float16:
+                self.spk_embed_affine_layer = self.spk_embed_affine_layer.to(torch.float16)
         else:
             target_dtype = torch.float32
+            prompt_feat = prompt_feat.to(torch.float32)
+            embedding = embedding.to(torch.float32)
         
         assert token.shape[0] == 1
         # xvec projection - normalize and ensure dtype consistency BEFORE projection
-        embedding = F.normalize(embedding.to(target_dtype), dim=1)
+        embedding = F.normalize(embedding, dim=1)
         embedding = self.spk_embed_affine_layer(embedding)
 
         # concat text and prompt_text
