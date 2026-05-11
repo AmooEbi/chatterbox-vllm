@@ -63,8 +63,10 @@ class ConditionalCFM(BASECFM):
             sample: generated mel-spectrogram
                 shape: (batch_size, n_feats, mel_timesteps)
         """
-
-        z = torch.randn_like(mu).to(mu.device).to(mu.dtype) * temperature
+        # Use FP16 for faster computation if input is FP16
+        is_fp16 = mu.dtype == torch.float16
+        
+        z = torch.randn_like(mu) * temperature
         cache_size = flow_cache.shape[2]
         # fix prompt and overlap part mu and z
         if cache_size != 0:
@@ -77,30 +79,19 @@ class ConditionalCFM(BASECFM):
         t_span = torch.linspace(0, 1, n_timesteps + 1, device=mu.device, dtype=mu.dtype)
         if self.t_scheduler == 'cosine':
             t_span = 1 - torch.cos(t_span * 0.5 * torch.pi)
-        return self.solve_euler(z, t_span=t_span, mu=mu, mask=mask, spks=spks, cond=cond), flow_cache
+        result = self.solve_euler(z, t_span=t_span, mu=mu, mask=mask, spks=spks, cond=cond)
+        return result.float() if not is_fp16 else result, flow_cache
 
+    @torch.inference_mode()
     def solve_euler(self, x, t_span, mu, mask, spks, cond):
         """
-        Fixed euler solver for ODEs.
-        Args:
-            x (torch.Tensor): random noise
-            t_span (torch.Tensor): n_timesteps interpolated
-                shape: (n_timesteps + 1,)
-            mu (torch.Tensor): output of encoder
-                shape: (batch_size, n_feats, mel_timesteps)
-            mask (torch.Tensor): output_mask
-                shape: (batch_size, 1, mel_timesteps)
-            spks (torch.Tensor, optional): speaker ids. Defaults to None.
-                shape: (batch_size, spk_emb_dim)
-            cond: Not used but kept for future purposes
+        Fixed euler solver for ODEs - optimized for speed.
+        Uses in-place operations and avoids unnecessary allocations.
         """
         t, _, dt = t_span[0], t_span[-1], t_span[1] - t_span[0]
         t = t.unsqueeze(dim=0)
 
-        # I am storing this because I can later plot it by putting a debugger here and saving it to a file
-        # Or in future might add like a return_all_steps flag
-        sol = []
-
+        # Pre-allocate buffers for CFG (classifier-free guidance)
         # Do not use concat, it may cause memory format changed and trt infer with wrong results!
         x_in = torch.zeros([2, 80, x.size(2)], device=x.device, dtype=x.dtype)
         mask_in = torch.zeros([2, 1, x.size(2)], device=x.device, dtype=x.dtype)
@@ -108,6 +99,11 @@ class ConditionalCFM(BASECFM):
         t_in = torch.zeros([2], device=x.device, dtype=x.dtype)
         spks_in = torch.zeros([2, 80], device=x.device, dtype=x.dtype)
         cond_in = torch.zeros([2, 80, x.size(2)], device=x.device, dtype=x.dtype)
+        
+        # Cache the cfg rate calculation
+        cfg_rate = self.inference_cfg_rate
+        one_plus_cfg = 1.0 + cfg_rate
+        
         for step in range(1, len(t_span)):
             # Classifier-Free Guidance inference introduced in VoiceBox
             x_in[:] = x
@@ -116,21 +112,24 @@ class ConditionalCFM(BASECFM):
             t_in[:] = t.unsqueeze(0)
             spks_in[0] = spks
             cond_in[0] = cond
+            
             dphi_dt = self.forward_estimator(
                 x_in, mask_in,
                 mu_in, t_in,
                 spks_in,
                 cond_in
             )
-            dphi_dt, cfg_dphi_dt = torch.split(dphi_dt, [x.size(0), x.size(0)], dim=0)
-            dphi_dt = ((1.0 + self.inference_cfg_rate) * dphi_dt - self.inference_cfg_rate * cfg_dphi_dt)
-            x = x + dt * dphi_dt
-            t = t + dt
-            sol.append(x)
-            if step < len(t_span) - 1:
-                dt = t_span[step + 1] - t
+            
+            # Split and apply CFG
+            dphi_dt_0 = dphi_dt[:x.size(0)]
+            dphi_dt_1 = dphi_dt[x.size(0):]
+            dphi_dt = one_plus_cfg * dphi_dt_0 - cfg_rate * dphi_dt_1
+            
+            # In-place update
+            x.add_(dphi_dt, alpha=dt.item() if isinstance(dt, torch.Tensor) else dt)
+            t.add_(dt)
 
-        return sol[-1].float()
+        return x
 
     def forward_estimator(self, x, mask, mu, t, spks, cond):
         if isinstance(self.estimator, torch.nn.Module):
@@ -198,11 +197,12 @@ class ConditionalCFM(BASECFM):
 class CausalConditionalCFM(ConditionalCFM):
     def __init__(self, in_channels=240, cfm_params=CFM_PARAMS, n_spks=1, spk_emb_dim=80, estimator=None):
         super().__init__(in_channels, cfm_params, n_spks, spk_emb_dim, estimator)
-        self.rand_noise = torch.randn([1, 80, 50 * 300])
+        # Pre-generate noise on CUDA for faster access
+        self.register_buffer('rand_noise', torch.randn([1, 80, 50 * 300]), persistent=False)
 
     @torch.inference_mode()
     def forward(self, mu, mask, n_timesteps, temperature=1.0, spks=None, cond=None):
-        """Forward diffusion
+        """Forward diffusion - optimized version
 
         Args:
             mu (torch.Tensor): output of encoder
@@ -219,10 +219,15 @@ class CausalConditionalCFM(ConditionalCFM):
             sample: generated mel-spectrogram
                 shape: (batch_size, n_feats, mel_timesteps)
         """
-
+        # Use FP16 if input is FP16
+        is_fp16 = mu.dtype == torch.float16
+        
+        # Get noise from pre-allocated buffer (already on correct device)
         z = self.rand_noise[:, :, :mu.size(2)].to(mu.device).to(mu.dtype) * temperature
-        # fix prompt and overlap part mu and z
+        
         t_span = torch.linspace(0, 1, n_timesteps + 1, device=mu.device, dtype=mu.dtype)
         if self.t_scheduler == 'cosine':
             t_span = 1 - torch.cos(t_span * 0.5 * torch.pi)
-        return self.solve_euler(z, t_span=t_span, mu=mu, mask=mask, spks=spks, cond=cond), None
+        
+        result = self.solve_euler(z, t_span=t_span, mu=mu, mask=mask, spks=spks, cond=cond)
+        return result.float() if not is_fp16 else result, None

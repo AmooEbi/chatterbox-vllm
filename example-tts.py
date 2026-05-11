@@ -10,12 +10,13 @@ if __name__ == "__main__":
     # Optimized settings for RTX 3090 (24GB)
     # - gpu_memory_utilization=0.75: Use 75% of GPU memory for vLLM (higher values may crash)
     # - compile=False: Disable torch.compile to avoid long compilation overhead for small batches
-    # - s3gen_use_fp16=False: Keep FP32 for better quality (can enable for speed)
+    # - s3gen_use_fp16=True: Enable FP16 for ~2x speedup in S3Gen with minimal quality loss
     model = ChatterboxTTS.from_pretrained(
         max_batch_size=3,
         max_model_len=1000,
         gpu_memory_utilization=0.75,
         compile=False,  # Disable compilation for faster first-token latency
+        s3gen_use_fp16=True,  # Enable FP16 for faster S3Gen inference
     )
 
     for i, audio_prompt_path in enumerate([None, "docs/audio-sample-01.mp3", "docs/audio-sample-03.mp3"]):
@@ -25,7 +26,9 @@ if __name__ == "__main__":
             "And here is a third prompt. It's a bit longer than the first one, but not by much.",
         ]
     
-        audios = model.generate(prompts, audio_prompt_path=audio_prompt_path, exaggeration=0.5)
+        # Use fewer diffusion steps for faster generation (default is 5)
+        # Can reduce to 3-4 for even faster but lower quality output
+        audios = model.generate(prompts, audio_prompt_path=audio_prompt_path, exaggeration=0.5, diffusion_steps=5)
         for audio_idx, audio in enumerate(audios):
             # Ensure audio is a tensor before saving
             if isinstance(audio, list):

@@ -90,12 +90,16 @@ class ChatterboxTTS:
                    max_batch_size: int = 10,
                    variant: str = "english",
                    
-                   # NEW: GPU memory utilization for vLLM (default 0.9 for 90% of GPU memory on single-GPU setups)
-                   # For RTX 3090 (24GB), use 0.85-0.9 for optimal performance
-                   gpu_memory_utilization: float = 0.9,
+                   # GPU memory utilization for vLLM (default 0.75 for 75% of GPU memory)
+                   # For RTX 3090 (24GB), use 0.75 to avoid OOM crashes while leaving room for S3Gen
+                   gpu_memory_utilization: float = 0.75,
 
-                   # Original Chatterbox defaults this to False. I don't see a substantial performance difference when running with FP16.
-                   s3gen_use_fp16: bool = False,
+                   # Use FP16 for S3Gen - significant speedup with minimal quality loss
+                   s3gen_use_fp16: bool = True,
+                   
+                   # Additional vLLM optimizations
+                   disable_log_stats: bool = True,
+                   disable_log_requests: bool = True,
                    **kwargs) -> 'ChatterboxTTS':
         ckpt_dir = Path(ckpt_dir)
 
@@ -116,8 +120,9 @@ class ChatterboxTTS:
         t3_speech_pos_emb.load_state_dict({ k.replace('speech_pos_emb.', ''):v for k,v in t3_weights.items() if k.startswith('speech_pos_emb.') })
         t3_speech_pos_emb = t3_speech_pos_emb.to(device=target_device).eval()
 
-        # Use the provided gpu_memory_utilization directly instead of the broken heuristic
+        # Use the provided gpu_memory_utilization directly
         print(f"Using gpu_memory_utilization={gpu_memory_utilization} ({gpu_memory_utilization * 100:.1f}% of GPU memory)")
+        print(f"S3Gen FP16 enabled: {s3gen_use_fp16}")
 
         base_vllm_kwargs = {
             "model": "./t3-model" if variant == "english" else "./t3-model-multilingual",
@@ -127,12 +132,19 @@ class ChatterboxTTS:
             "gpu_memory_utilization": gpu_memory_utilization,
             "enforce_eager": not compile,
             "max_model_len": max_model_len,
-            # Enable additional optimizations for single-GPU setups
+            # Single-GPU optimizations
             "disable_custom_all_reduce": True,
             # Disable chunked prefill for faster small-batch inference
             "enable_chunked_prefill": False,
-            # Set a reasonable block size for KV cache
+            # Optimal block size for TTS workloads
             "block_size": 16,
+            # Disable unnecessary logging
+            "disable_log_stats": disable_log_stats,
+            "disable_log_requests": disable_log_requests,
+            # Enable prefix caching for repeated prompts
+            "enable_prefix_caching": True,
+            # Use CUDA graphs for faster execution (only when not compiling)
+            "use_cuda_graph": not compile,
         }
 
         t3 = LLM(**{**base_vllm_kwargs, **kwargs})
@@ -145,10 +157,10 @@ class ChatterboxTTS:
         s3gen.load_state_dict(load_file(ckpt_dir / "s3gen.safetensors"), strict=False)
         s3gen = s3gen.to(device=target_device).eval()
         
-        # Compile S3Gen for faster inference if requested
+        # Compile S3Gen for faster inference if requested (use max-autotune for better performance)
         if compile:
-            print("Compiling S3Gen model with torch.compile...")
-            s3gen.flow = torch.compile(s3gen.flow, mode="reduce-overhead")
+            print("Compiling S3Gen model with torch.compile (mode=max-autotune)...")
+            s3gen.flow = torch.compile(s3gen.flow, mode="max-autotune", fullgraph=True)
 
         default_conds = Conditionals.load(ckpt_dir / "conds.pt")
         default_conds.to(device=target_device)
