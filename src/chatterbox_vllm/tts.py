@@ -89,6 +89,10 @@ class ChatterboxTTS:
                    max_model_len: int = 1000, compile: bool = False,
                    max_batch_size: int = 10,
                    variant: str = "english",
+                   
+                   # NEW: GPU memory utilization for vLLM (default 0.9 for 90% of GPU memory on single-GPU setups)
+                   # For RTX 3090 (24GB), use 0.85-0.9 for optimal performance
+                   gpu_memory_utilization: float = 0.9,
 
                    # Original Chatterbox defaults this to False. I don't see a substantial performance difference when running with FP16.
                    s3gen_use_fp16: bool = False,
@@ -112,25 +116,23 @@ class ChatterboxTTS:
         t3_speech_pos_emb.load_state_dict({ k.replace('speech_pos_emb.', ''):v for k,v in t3_weights.items() if k.startswith('speech_pos_emb.') })
         t3_speech_pos_emb = t3_speech_pos_emb.to(device=target_device).eval()
 
-        total_gpu_memory = torch.cuda.get_device_properties(0).total_memory
-        unused_gpu_memory = total_gpu_memory - torch.cuda.memory_allocated()
-        
-        # Heuristic: rough calculation for what percentage of GPU memory to give to vLLM.
-        # Tune this until the 'Maximum concurrency for ___ tokens per request: ___x' is just over 1.
-        # This rough heuristic gives 1.55GB for the model weights plus 128KB per token.
-        vllm_memory_needed = (1.55*1024*1024*1024) + (max_batch_size * max_model_len * 1024 * 128)
-        vllm_memory_percent = vllm_memory_needed / unused_gpu_memory
-
-        print(f"Giving vLLM {vllm_memory_percent * 100:.2f}% of GPU memory ({vllm_memory_needed / 1024**2:.2f} MB)")
+        # Use the provided gpu_memory_utilization directly instead of the broken heuristic
+        print(f"Using gpu_memory_utilization={gpu_memory_utilization} ({gpu_memory_utilization * 100:.1f}% of GPU memory)")
 
         base_vllm_kwargs = {
             "model": "./t3-model" if variant == "english" else "./t3-model-multilingual",
             "task": "generate",
             "tokenizer": "EnTokenizer" if variant == "english" else "MtlTokenizer",
             "tokenizer_mode": "custom",
-            "gpu_memory_utilization": vllm_memory_percent,
+            "gpu_memory_utilization": gpu_memory_utilization,
             "enforce_eager": not compile,
             "max_model_len": max_model_len,
+            # Enable additional optimizations for single-GPU setups
+            "disable_custom_all_reduce": True,
+            # Disable chunked prefill for faster small-batch inference
+            "enable_chunked_prefill": False,
+            # Set a reasonable block size for KV cache
+            "block_size": 16,
         }
 
         t3 = LLM(**{**base_vllm_kwargs, **kwargs})
@@ -142,6 +144,11 @@ class ChatterboxTTS:
         s3gen = S3Gen(use_fp16=s3gen_use_fp16)
         s3gen.load_state_dict(load_file(ckpt_dir / "s3gen.safetensors"), strict=False)
         s3gen = s3gen.to(device=target_device).eval()
+        
+        # Compile S3Gen for faster inference if requested
+        if compile:
+            print("Compiling S3Gen model with torch.compile...")
+            s3gen.flow = torch.compile(s3gen.flow, mode="reduce-overhead")
 
         default_conds = Conditionals.load(ckpt_dir / "conds.pt")
         default_conds.to(device=target_device)
@@ -245,6 +252,9 @@ class ChatterboxTTS:
         temperature: float = 0.8,
         max_tokens=1000, # Capped at max_model_len
 
+        # Number of diffusion steps to use for S3Gen - default reduced from 10 to 5 for faster inference
+        diffusion_steps: int = 5,
+
         # From original Chatterbox HF generation args
         top_p=0.8,
         repetition_penalty=2.0,
@@ -262,6 +272,7 @@ class ChatterboxTTS:
             language_id=language_id,
             exaggeration=exaggeration,
             max_tokens=max_tokens,
+            diffusion_steps=diffusion_steps,
             top_p=top_p,
             repetition_penalty=repetition_penalty,
             *args, **kwargs
@@ -280,7 +291,8 @@ class ChatterboxTTS:
         # Number of diffusion steps to use for S3Gen
         # The original Chatterbox uses 10. 5 is often enough for good quality audio, though some quality loss can be detected.
         # This can be as low as 2 or 3 for faster generation, though the audio quality will degrade substantially.
-        diffusion_steps: int = 10,
+        # For real-time applications, use 4-5 steps as a good balance between speed and quality.
+        diffusion_steps: int = 5,
 
         # From original Chatterbox HF generation args
         top_p=1.0,

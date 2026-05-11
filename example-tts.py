@@ -6,9 +6,15 @@ from chatterbox_vllm.tts import ChatterboxTTS
 
 
 if __name__ == "__main__":
+    # Optimized settings for RTX 3090 (24GB)
+    # - gpu_memory_utilization=0.9: Use 90% of GPU memory for vLLM
+    # - compile=True: Enable torch.compile for faster S3Gen inference
+    # - s3gen_use_fp16=False: Keep FP32 for better quality (can enable for speed)
     model = ChatterboxTTS.from_pretrained(
-        max_batch_size = 3,
-        max_model_len = 1000,
+        max_batch_size=3,
+        max_model_len=1000,
+        gpu_memory_utilization=0.9,
+        compile=True,  # Enable compilation for faster inference
     )
 
     for i, audio_prompt_path in enumerate([None, "docs/audio-sample-01.mp3", "docs/audio-sample-03.mp3"]):
